@@ -212,49 +212,6 @@ int adaline_predict(struct adaline *ada, const double *x, double *out)
 }
 
 /**
- * Update the weights of the model using supervised learning for one feature
- * vector. **Nota:** A implementação de ADALINE tradicional usa o *erro linear* * (y_true - y_out_linear) para o gradiente, não o erro após a função de ativação.
- * O código original implementa o Perceptron com função de ativação linear e 
- * quantização final (o que está correto para ADALINE), mas a atualização usa 
- * a saída *quantizada* (`p`), o que a torna um algoritmo *Perceptron* em vez 
- * de *ADALINE*.
- * * * Correção 6 (Importante): Para ser ADALINE (regra delta), o erro deve ser 
- * `y_true - y_linear` e a função de ativação não é usada no `fit`, apenas no 
- * `predict` para quantizar.
- * * * A sua implementação atual está mais próxima do **Algoritmo Perceptron** * com função de custo Perceptron. Vou corrigir para a **Regra Delta (ADALINE)** * onde a atualização usa a saída *linear* (`y_out`).
- *
- * \param[in] ada adaline model to fit
- * \param[in] x feature vector
- * \param[in] y known output value
- * \returns correction factor
- */
-double adaline_fit_sample(struct adaline *ada, const double *x, const int y)
-{
-    /* output of the model with current weights *ANTES* de aplicar ativação */
-    double y_out;
-    // O retorno de adaline_predict (int p) não é usado na atualização da Regra Delta
-    adaline_predict(ada, x, &y_out); 
-    
-    // Erro da Regra Delta (ADALINE): y_true - y_linear
-    double prediction_error = (double)y - y_out; 
-    double correction_factor = ada->eta * prediction_error; // fator de ajuste dos pesos
-
-    /* update each weight, o último peso é o termo de bias */
-    for (int i = 0; i < ada->num_weights - 1; i++)
-    {
-        // Atualização: w_i = w_i + eta * (y - y_out) * x_i
-        ada->weights[i] += correction_factor * x[i];
-    }
-    // Atualização do Bias: w_bias = w_bias + eta * (y - y_out) * 1
-    ada->weights[ada->num_weights - 1] += correction_factor; 
-
-    // O valor de retorno deve ser o erro quadrático médio se for o erro 
-    // real do ADALINE, mas vou manter o fator de correção absoluto como 
-    // uma medida de mudança.
-    return correction_factor;
-}
-
-/**
  * Update the weights of the model using supervised learning for an array of
  * vectors.
  *
@@ -294,7 +251,7 @@ void adaline_fit(struct adaline *ada, double **X, const int *y, const int N)
         // -----------------------------------------------------------
         
         // Define a região paralela. O erro total (avg_pred_error) será somado (reduction).
-        #pragma omp parallel default(none) \
+        #pragma omp parallel \
         shared(ada, X, y, N, grad_sum, error_flag) \
         reduction(+:avg_pred_error)
         {
@@ -369,6 +326,7 @@ void adaline_fit(struct adaline *ada, double **X, const int *y, const int N)
 
         // 2. Atualiza os pesos usando o gradiente acumulado (Batch GD)
         // Update: w = w + eta * (grad_sum / N)
+        
         for (int i = 0; i < ada->num_weights; i++)
         {
             // Aplica a correção média: eta * (Gradiente Total / N)

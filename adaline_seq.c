@@ -121,14 +121,14 @@ void delete_adaline(struct adaline *ada)
 };
 
 /** [Heaviside activation
- * function](https://en.wikipedia.org/wiki/Heaviside_step_function) <img
+ * function](https://en.wikipedia.org/wiki/Heaviside_step_function) <img    
  * src="https://upload.wikimedia.org/wikipedia/commons/d/d9/Dirac_distribution_CDF.svg"
  * width="200px"/>
  * @param x activation function input
  * @returns \f$f(x)= \begin{cases}1 & \forall\; x > 0\\ -1 & \forall\; x \le0
  * \end{cases}\f$
  */
-int adaline_activation(double x) { return x > 0 ? 1 : -1; }
+int adaline_activation(double x) { return x > 0 ? 1 : -1; }  // FUNÇÃO DEGRAU
 
 /**
  * Operator to print the weights of the model
