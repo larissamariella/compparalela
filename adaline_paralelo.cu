@@ -133,10 +133,6 @@ void delete_adaline(struct adaline *ada)
  * @param x activation function input
  * @returns 1 if x > 0, -1 otherwise
  */
-__device__ int adaline_activation_device(double x) 
-{ 
-    return x > 0 ? 1 : -1; 
-}
 
 int adaline_activation(double x) 
 { 
@@ -166,7 +162,7 @@ __global__ void kernel_predict(const double *X, const double *weights,
         
         for (int j = 0; j < num_features; j++)
         {
-            y += X[idx * num_features + j] * weights[j];
+            y += X[idx * num_features + j] * weights[j];   // achatamento da matriz
         }
         
         y_out[idx] = y;
@@ -197,28 +193,17 @@ __global__ void kernel_compute_gradients(const double *X, const int *Y,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int stride = gridDim.x * blockDim.x;
     
-    // Shared memory for local reduction
-    __shared__ double shared_error[THREADS_PER_BLOCK];
-    
-    shared_error[threadIdx.x] = 0.0;
-    __syncthreads();
-    
-    // Each thread processes multiple samples (stride loop)
     for (int i = idx; i < N; i += stride)
     {
-        // Compute error: y_true - y_linear
         double prediction_error = (double)Y[i] - y_out[i];
         
-        // Accumulate absolute error for convergence check
         atomicAdd(error_sum, fabs(eta * prediction_error));
         
-        // Update gradients for each weight
         for (int j = 0; j < num_weights - 1; j++)
         {
             atomicAdd(&grad_sum[j], prediction_error * X[i * (num_weights - 1) + j]);
         }
         
-        // Update bias gradient
         atomicAdd(&grad_sum[num_weights - 1], prediction_error);
     }
 }
@@ -399,7 +384,7 @@ void adaline_fit(struct adaline *ada, double **X, const int *Y, const int N)
         CUDA_CHECK(cudaDeviceSynchronize());
 
         // Copy error sum and weights back to CPU
-        CUDA_CHECK(cudaMemcpy(&h_error_sum, d_error_sum, sizeof(double), 
+         CUDA_CHECK(cudaMemcpy(&h_error_sum, d_error_sum, sizeof(double), 
                               cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(ada->weights, ada->d_weights, 
                               ada->num_weights * sizeof(double),
@@ -439,7 +424,7 @@ void test1(double eta)
 {
     struct adaline ada = new_adaline(2, eta);
 
-    const int N = 10;
+    const int N = 100000;
     const double saved_X[10][2] = {{0, 1},    {1, -2},   {2, 3},   {3, -1},
                                    {4, 1},    {6, -5},   {-7, -3}, {-8, 5},
                                    {-9, 2}, {-10, -15}};
@@ -482,7 +467,7 @@ void test2(double eta)
 {
     struct adaline ada = new_adaline(2, eta);
 
-    const int N = 50;
+    const int N = 5000;
 
     double **X = (double **)malloc(N * sizeof(double *));
     int *Y = (int *)malloc(N * sizeof(int));
@@ -559,7 +544,7 @@ void test3(double eta)
 {
     struct adaline ada = new_adaline(6, eta);
 
-    const int N = 100000; // Reduced from 1M for reasonable GPU memory usage
+    const int N = 1000000;
 
     double **X = (double **)malloc(N * sizeof(double *));
     int *Y = (int *)malloc(N * sizeof(int));

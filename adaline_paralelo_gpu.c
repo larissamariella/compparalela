@@ -24,7 +24,6 @@ struct adaline
     int num_weights;     
 };
 
-// --- Construtor e Destrutor (Inalterados, exceto limpeza) ---
 struct adaline new_adaline(const int num_features, const double eta)
 {
     if (eta <= 0.0 || eta >= 1.0) {
@@ -67,16 +66,10 @@ char *adaline_get_weights_str(const struct adaline *ada)
     return out;
 }
 
-/**
- * Predição na GPU (Opcional, mas recomendada se for fazer muitas predições em lote)
- * Aqui mantive simples para um único vetor, rodando no Host ou Device conforme necessidade.
- */
 int adaline_predict(struct adaline *ada, const double *x, double *out)
 {
     double y = ada->weights[ada->num_weights - 1]; // Bias (último peso)
     
-    // Cálculo simples, geralmente não vale a pena offload para GPU para 1 única amostra
-    // a menos que esteja dentro de um loop maior mapeado.
     for (int i = 0; i < ada->num_weights - 1; i++) 
         y += x[i] * ada->weights[i];
 
@@ -84,19 +77,8 @@ int adaline_predict(struct adaline *ada, const double *x, double *out)
     return adaline_activation(y);
 }
 
-/**
- * Treinamento Otimizado para GPU
- * \param X_flat Array 1D contendo as features contíguas. 
- * Acesso: X[amostra * n_features + feature]
- */
 void adaline_fit(struct adaline *ada, const double *X_flat, const int *y, const int N)
 {
-    // CORREÇÃO 1: Verificação de segurança
-    if (ada->num_weights > MAX_GPU_WEIGHTS) {
-        fprintf(stderr, "Erro: Numero de pesos (%d) excede o maximo suportado pela GPU (%d).\n", 
-                ada->num_weights, MAX_GPU_WEIGHTS);
-        exit(EXIT_FAILURE);
-    }
 
     double avg_pred_error = 1.0; 
     int iter;
@@ -105,12 +87,9 @@ void adaline_fit(struct adaline *ada, const double *X_flat, const int *y, const 
     double *weights = ada->weights;
     double eta = ada->eta;
 
-    // CORREÇÃO 2: Alocamos o tamanho MÁXIMO (128) para garantir que a redução
-    // não acesse memória inválida, mesmo que usemos apenas 7.
     double *grad_sum = (double *)calloc(MAX_GPU_WEIGHTS, sizeof(double));
     if (!grad_sum) exit(EXIT_FAILURE);
 
-    // Mapeamento: note que mapeamos grad_sum com o tamanho MAX_GPU_WEIGHTS
     #pragma omp target data map(to: X_flat[0:N*num_features], y[0:N]) \
                             map(tofrom: weights[0:num_weights]) \
                             map(alloc: grad_sum[0:MAX_GPU_WEIGHTS])
@@ -119,20 +98,16 @@ void adaline_fit(struct adaline *ada, const double *X_flat, const int *y, const 
         {
             avg_pred_error = 0.0;
             
-            // Zera o buffer (usando o tamanho fixo para garantir limpeza total)
             #pragma omp target teams distribute parallel for
             for(int j=0; j<MAX_GPU_WEIGHTS; j++) {
                 grad_sum[j] = 0.0;
             }
 
-            // CORREÇÃO 3: Usamos a constante [:MAX_GPU_WEIGHTS] na cláusula reduction
             #pragma omp target teams distribute parallel for \
                 reduction(+:avg_pred_error) \
                 reduction(+:grad_sum[:MAX_GPU_WEIGHTS])
             for (int i = 0; i < N; i++)
             {
-                // O código interno continua usando 'num_weights' e 'num_features' reais
-                // para não desperdiçar processamento matemático.
                 double y_out = weights[num_features]; // Bias
                 
                 for (int j = 0; j < num_features; j++) {
@@ -150,14 +125,12 @@ void adaline_fit(struct adaline *ada, const double *X_flat, const int *y, const 
 
             avg_pred_error /= N;
 
-            // Atualização dos pesos (apenas os necessários)
             #pragma omp target teams distribute parallel for
             for (int j = 0; j < num_weights; j++) {
                 weights[j] += eta * (grad_sum[j] / N);
             }
             #pragma omp target update from(weights[0:num_weights])
 
-            // 4. Imprime igual ao código original
             printf("\tIter %3d: Training weights: %s\tAvg correction: %.4f\n", 
                    iter, adaline_get_weights_str(ada), avg_pred_error);
         }
@@ -171,18 +144,153 @@ void adaline_fit(struct adaline *ada, const double *X_flat, const int *y, const 
         printf("Did not converge. Final Error: %.4f\n", avg_pred_error);
 }
 
+/** @}
+ * @}
+ */
+
 /**
- * Teste pesado (Test 3) adaptado para memória linear
+ * test function to predict points in a 2D coordinate system above the line
+ * \f$x=y\f$ as +1 and others as -1.
+ * Note that each point is defined by 2 values or 2 features.
+ * \param[in] eta learning rate (optional, default=0.01)
+ */
+void test1(double eta)
+{
+    struct adaline ada = new_adaline(2, eta); // 2 features
+
+    const int N = 10; // number of sample points
+    const double saved_X[10][2] = {{0, 1},    {1, -2},   {2, 3},   {3, -1},
+                                   {4, 1},    {6, -5},   {-7, -3}, {-8, 5},
+                                   {-9, 2}, {-10, -15}};
+
+    double **X = (double **)malloc(N * sizeof(double *));
+
+    const int Y[10] = {1, -1, 1, -1, -1,
+                       -1, 1, 1, 1, -1}; // corresponding y-values
+    for (int i = 0; i < N; i++)
+    {
+        X[i] = (double *)saved_X[i];
+    }
+    
+    printf("\n------- Test 1 -------\n");
+    printf("Model before fit: %s\n", adaline_get_weights_str(&ada));
+
+    adaline_fit(&ada, X, Y, N);
+    printf("Model after fit: %s\n", adaline_get_weights_str(&ada));
+
+    double test_x[] = {5, -3};
+    int pred = adaline_predict(&ada, test_x, NULL);
+    printf("Predict for x=(5,-3): % d\n", pred);
+    assert(pred == -1); 
+    printf(" ...passed\n");
+
+    double test_x2[] = {5, 8};
+    pred = adaline_predict(&ada, test_x2, NULL);
+    printf("Predict for x=(5, 8): % d\n", pred);
+    assert(pred == 1);
+    printf(" ...passed\n");
+
+    free(X);
+    delete_adaline(&ada);
+}
+
+/**
+ * test function to predict points in a 2D coordinate system above the line
+ * \f$x+3y=-1\f$ as +1 and others as -1.
+ * Note that each point is defined by 2 values or 2 features.
+ * The function will create random sample points for training and test purposes.
+ * \param[in] eta learning rate (optional, default=0.01)
+ */
+void test2(double eta)
+{
+    struct adaline ada = new_adaline(2, eta); // 2 features
+
+    const int N = 50; // number of sample points
+
+    double **X = (double **)malloc(N * sizeof(double *));
+    int *Y = (int *)malloc(N * sizeof(int)); // corresponding y-values
+    if (!X || !Y)
+    {
+        perror("Unable to allocate memory for X or Y!");
+        if (X) free(X);
+        if (Y) free(Y);
+        delete_adaline(&ada);
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < N; i++)
+    {
+        X[i] = (double *)malloc(2 * sizeof(double));
+        if (!X[i])
+        {
+            perror("Unable to allocate memory for X[i]!");
+            for(int j=0; j<i; ++j) free(X[j]);
+            free(X);
+            free(Y);
+            delete_adaline(&ada);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // generate sample points in the interval
+    // [-range2/100 , (range2-1)/100]
+    int range = 500;             // sample points full-range
+    int range2 = range >> 1;     // sample points half-range
+    for (int i = 0; i < N; i++)
+    {
+        double x0 = ((rand() % range) - range2) / 100.0;
+        double x1 = ((rand() % range) - range2) / 100.0;
+        X[i][0] = x0;
+        X[i][1] = x1;
+        Y[i] = (x0 + 3. * x1) > -1 ? 1 : -1;
+    }
+
+    printf("\n------- Test 2 -------\n");
+    printf("Model before fit: %s\n", adaline_get_weights_str(&ada));
+
+    adaline_fit(&ada, X, Y, N);
+    printf("Model after fit: %s\n", adaline_get_weights_str(&ada));
+
+    int N_test_cases = 5;
+    double test_x[2];
+    for (int i = 0; i < N_test_cases; i++)
+    {
+        double x0 = ((rand() % range) - range2) / 100.0;
+        double x1 = ((rand() % range) - range2) / 100.0;
+
+        test_x[0] = x0;
+        test_x[1] = x1;
+        int pred = adaline_predict(&ada, test_x, NULL);
+        printf("Predict for x=(% 3.2f,% 3.2f): % d\n", x0, x1, pred);
+
+        int expected_val = (x0 + 3. * x1) > -1 ? 1 : -1;
+        assert(pred == expected_val);
+        printf(" ...passed\n");
+    }
+
+    for (int i = 0; i < N; i++) free(X[i]);
+    free(X);
+    free(Y);
+    delete_adaline(&ada);
+}
+
+/**
+ * test function to predict points in a 3D coordinate system lying within the
+ * sphere of radius 1 and centre at origin as +1 and others as -1. Note that
+ * each point is defined by 3 values but we use 6 features. The function will
+ * create random sample points for training and test purposes.
+ * The sphere centred at origin and radius 1 is defined as:
+ * \f$x^2+y^2+z^2=r^2=1\f$ and if the \f$r^2<1\f$, point lies within the sphere
+ * else, outside.
+ *
+ * \param[in] eta learning rate (optional, default=0.01)
  */
 void test3(double eta)
 {
-    // Aumentei N para justificar o uso de GPU (1 milhão de pontos)
-    const int N = 5000; 
+    const int N = 100000; 
     const int n_features_input = 6; 
     
     struct adaline ada = new_adaline(n_features_input, eta);
 
-    // Alocação Linear (Crucial para GPU)
     double *X = (double *)malloc(N * n_features_input * sizeof(double));
     int *Y = (int *)malloc(N * sizeof(int));
 
@@ -196,14 +304,12 @@ void test3(double eta)
     int range = 200;
     int range2 = range >> 1;
     
-    // Preenchimento dos dados (na CPU)
     for (int i = 0; i < N; i++)
     {
         double x0 = ((rand() % range) - range2) / 100.0;
         double x1 = ((rand() % range) - range2) / 100.0;
         double x2 = ((rand() % range) - range2) / 100.0;
         
-        // Mapeamento linear: indice = i * n_colunas + coluna
         size_t idx = i * n_features_input;
         X[idx + 0] = x0;
         X[idx + 1] = x1;
@@ -225,7 +331,6 @@ void test3(double eta)
     printf("Model after fit: %s\n", adaline_get_weights_str(&ada));
     printf("Time elapsed: %.4f seconds\n", end - start);
 
-    // Testes de verificação
     double test_x[6] = {0.5, 0.5, 0.5, 0.25, 0.25, 0.25}; // Dentro da esfera
     int pred = adaline_predict(&ada, test_x, NULL);
     printf("Check point (0.5, 0.5, 0.5): Predicted %d (Expected 1)\n", pred);
@@ -241,7 +346,6 @@ int main(int argc, char **argv)
     double eta = 0.01;
     if (argc == 2) eta = strtod(argv[1], NULL);
     
-    // Verificando dispositivos disponíveis
     int num_devices = omp_get_num_devices();
     printf("Number of GPU devices available: %d\n", num_devices);
     
